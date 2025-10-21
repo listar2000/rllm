@@ -70,7 +70,11 @@ class AgentExecutionEngine:
         self.max_response_length = max_response_length
         self.max_prompt_length = max_prompt_length
         self.enforce_max_prompt_length = enforce_max_prompt_length
-        self.disable_thinking = self.config.get("rllm", {}).get("disable_thinking", False)
+
+        if self.config is not None:
+            self.disable_thinking = self.config.get("rllm", {}).get("disable_thinking", False)
+        else:  # non-training mode where the config will be empty
+            self.disable_thinking = False
 
         self.agent_class = agent_class
         self.agent_args = agent_args
