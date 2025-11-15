@@ -12,7 +12,6 @@ import ray
 from omegaconf import OmegaConf
 
 from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING
-from rllm.trainer.verl.agent_omni_trainer import AgentOmniTrainer
 from rllm.trainer.verl.agent_ppo_trainer import AgentPPOTrainer
 
 # Local application imports
@@ -159,6 +158,9 @@ class TaskRunner:
 
         # if config.rllm.workflow.use_workflow:
         if agent_run_func is not None:
+            # TODO: add it back to the top once the import issue is resolved (i.e. safe to import this even if the user doesn't use it)
+            from rllm.trainer.verl.agent_omni_trainer import AgentOmniTrainer
+
             print("IMPORTANT: Using AgentOmniTrainer")
             trainer = AgentOmniTrainer(
                 config=config,
