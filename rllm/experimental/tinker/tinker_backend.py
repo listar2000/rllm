@@ -131,6 +131,7 @@ class TinkerBackend(BackendProtocol[Iterable, list[tinker.Datum]]):
             max_prompt_length=self.full_config.data.max_prompt_length,
             max_response_length=self.full_config.data.max_response_length,
             sampling_params=self.full_config.sampling,
+            **self.full_config.rollout_engine,
         )
         return self.rollout_engine
 
