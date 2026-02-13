@@ -99,14 +99,10 @@ class UnifiedWorkflowEngine:
                 executor=self.executor,
                 **self.workflow_args,
             )
-            assert workflow.is_multithread_safe(), (
-                "Workflows must contain only thread-save environments"
-            )
+            assert workflow.is_multithread_safe(), "Workflows must contain only thread-save environments"
             self.workflow_queue.put_nowait(workflow)
 
-    async def process_task_with_retry(
-        self, task: dict, task_id: str, rollout_idx: int, result_idx: int, **kwargs
-    ) -> tuple[str, int, int, Episode]:
+    async def process_task_with_retry(self, task: dict, task_id: str, rollout_idx: int, result_idx: int, **kwargs) -> tuple[str, int, int, Episode]:
         """Process a single task rollout with retry logic based on termination reasons.
 
         Args:
@@ -127,9 +123,8 @@ class UnifiedWorkflowEngine:
         try:
             for retry_attempt in range(1, self.retry_limit + 1):
                 uid = f"{task_id}:{rollout_idx}"
-                episode = await workflow.run_with_termination_handling(
-                    task=task, uid=uid, **kwargs
-                )
+                workflow.reset(task=task, uid=uid)
+                episode = await workflow.run_with_termination_handling(task=task, uid=uid, **kwargs)
 
                 # We will make sure that the episode has the correct `uid` and `task` fields.
                 episode.id = uid
@@ -157,32 +152,25 @@ class UnifiedWorkflowEngine:
                     print(error_tb)
 
                 if retry_attempt < self.retry_limit:
-                    print(
-                        f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying..."
-                    )
+                    print(f"[{uid}] Rollout failed on attempt {retry_attempt}/{self.retry_limit}, retrying...")
                     continue
 
             if not self.raise_on_error:
-                print(
-                    f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts."
-                )
+                print(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts.")
             else:
-                raise Exception(
-                    f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts."
-                )
+                raise Exception(f"[{uid}] Rollout failed permanently after {self.retry_limit} attempts.")
 
             return task_id, rollout_idx, result_idx, episode
 
         finally:
             await self.workflow_queue.put(workflow)
 
-    async def execute_tasks(
-        self, tasks: list[dict], task_ids: list[str] | None = None, **kwargs
-    ) -> list[Episode]:
+    async def execute_tasks(self, tasks: list[dict], task_ids: list[str] | None = None, is_validation: bool = False, **kwargs) -> list[Episode]:
         """Run asynchronous workflow execution with retry logic for multiple tasks.
         Args:
             tasks: List of task dictionaries to process.
             task_ids: Optional list of task identifiers. If None, UUIDs are generated.
+            is_validation: Whether the generation is for validation.
             **kwargs: Additional arguments passed to individual task processing.
 
         Returns:
@@ -190,6 +178,8 @@ class UnifiedWorkflowEngine:
         """
         if self.workflow_queue is None:
             await self.initialize_pool()
+
+        self.rollout_engine.is_validation = is_validation
 
         if task_ids is None:
             task_ids = [str(uuid.uuid4()) for _ in tasks]
@@ -202,15 +192,11 @@ class UnifiedWorkflowEngine:
         futures = []
         for idx, (task, task_id) in enumerate(zip(tasks, task_ids, strict=True)):
             rollout_idx = task_id_counter[task_id]
-            futures.append(
-                self.process_task_with_retry(task, task_id, rollout_idx, idx, **kwargs)
-            )
+            futures.append(self.process_task_with_retry(task, task_id, rollout_idx, idx, **kwargs))
             task_id_counter[task_id] += 1
 
         with tqdm(total=len(tasks), desc="Generating trajectories") as pbar:
-            for future in asyncio.as_completed(
-                futures
-            ):  # the completion order might not be ordered
+            for future in asyncio.as_completed(futures):  # the completion order might not be ordered
                 task_id, rollout_idx, idx, episode = await future
                 results[idx] = episode
                 pbar.update(1)
@@ -219,9 +205,7 @@ class UnifiedWorkflowEngine:
         # Log episodes if logger is provided
         if self.episode_logger is not None:
             try:
-                logger.info(
-                    f"Logging {len(ordered_results)} episodes to step={self.current_step}, mode={self.current_mode}, epoch={self.current_epoch}"
-                )
+                logger.info(f"Logging {len(ordered_results)} episodes to step={self.current_step}, mode={self.current_mode}, epoch={self.current_epoch}")
                 self.episode_logger.log_episodes_batch(
                     ordered_results,
                     self.current_step,
@@ -247,31 +231,27 @@ class UnifiedWorkflowEngine:
         Returns:
             DataProto: Transformed results compatible with Verl training.
         """
-        from rllm.experimental.rollout.verl_engine import VerlEngine
+        from rllm.experimental.rollout import VerlEngine
 
-        assert isinstance(self.rollout_engine, VerlEngine), (
-            "Rollout engine must be a VerlEngine to invoke execute_tasks_verl"
-        )
+        assert isinstance(self.rollout_engine, VerlEngine), "Rollout engine must be a VerlEngine to invoke execute_tasks_verl"
         await self.rollout_engine.wake_up()
 
         is_validation = batch.meta_info.get("validate", False)
         if is_validation:
-            self.rollout_engine.validate = True
+            self.rollout_engine.is_validation = True
             self.current_mode = "val"
         else:
             self.current_mode = "train"
         tasks = batch.non_tensor_batch["extra_info"].tolist()
         task_ids = batch.non_tensor_batch["task_ids"].tolist()
-        episodes = await self.execute_tasks(
-            tasks, task_ids, **kwargs
-        )  # list of Episodes
+        episodes = await self.execute_tasks(tasks, task_ids, **kwargs)  # list of Episodes
         # handle data sources in the input dataproto
         if "data_source" in batch.non_tensor_batch:
             data_sources = batch.non_tensor_batch["data_source"].tolist()
             for episode, data_source in zip(episodes, data_sources, strict=True):
                 episode.info["data_source"] = data_source
 
-        self.rollout_engine.validate = False
+        self.rollout_engine.is_validation = False
 
         await self.rollout_engine.sleep()
 
